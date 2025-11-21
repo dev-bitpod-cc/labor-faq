@@ -175,9 +175,7 @@ def query_faq(client, query: str, store_id: str) -> dict:
                 tools=[
                     types.Tool(
                         file_search=types.FileSearch(
-                            file_search_store_config=types.FileSearchStoreConfig(
-                                file_search_store_name=store_id
-                            )
+                            file_search_store_names=[store_id]
                         )
                     )
                 ],
