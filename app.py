@@ -166,6 +166,24 @@ def load_file_mapping():
     return {}
 
 
+@st.cache_data
+def load_gemini_id_mapping():
+    """載入 Gemini ID 映射（gemini_file_id → document_id）"""
+    mapping_path = Path(__file__).parent / "data" / "faq_gemini_id_mapping.json"
+    if mapping_path.exists():
+        with open(mapping_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            files = data.get('files', {})
+            # 建立反向映射: gemini_file_id → document_id
+            reverse_map = {}
+            for doc_id, info in files.items():
+                gemini_id = info.get('gemini_file_id', '')
+                if gemini_id:
+                    reverse_map[gemini_id] = doc_id
+            return reverse_map
+    return {}
+
+
 def query_faq(client, query: str, store_id: str) -> dict:
     """
     執行 FAQ 查詢
@@ -233,7 +251,7 @@ def query_faq(client, query: str, store_id: str) -> dict:
         }
 
 
-def parse_source_info(title: str, text: str = "", file_mapping: dict = None) -> dict:
+def parse_source_info(title: str, text: str = "", file_mapping: dict = None, gemini_id_mapping: dict = None) -> dict:
     """
     解析來源資訊
 
@@ -241,6 +259,7 @@ def parse_source_info(title: str, text: str = "", file_mapping: dict = None) -> 
         title: 檔案名稱 (可能是 Gemini file ID 或檔名)
         text: 內容片段（可從中提取來源和問題）
         file_mapping: 檔案映射（包含原始連結）
+        gemini_id_mapping: Gemini ID 反向映射（gemini_file_id → document_id）
 
     Returns:
         dict: 包含 source, question, display_name, detail_url
@@ -262,6 +281,10 @@ def parse_source_info(title: str, text: str = "", file_mapping: dict = None) -> 
     match = re.search(pattern, title.replace('.txt', ''))
     if match:
         doc_id = match.group(1)
+
+    # 如果 title 是 Gemini file ID，從反向映射查詢 document_id
+    if not doc_id and gemini_id_mapping and title in gemini_id_mapping:
+        doc_id = gemini_id_mapping[title]
 
     # 從 file_mapping 查詢原始連結
     if file_mapping and doc_id and doc_id in file_mapping:
@@ -323,6 +346,7 @@ def display_sources(sources: list):
 
     # 載入檔案映射
     file_mapping = load_file_mapping()
+    gemini_id_mapping = load_gemini_id_mapping()
 
     # 去重（使用內容片段去重）
     seen = set()
@@ -343,7 +367,7 @@ def display_sources(sources: list):
     for i, source in enumerate(unique_sources[:10], 1):
         title = source.get('title', '未知')
         text = source.get('text', '')
-        info = parse_source_info(title, text, file_mapping)
+        info = parse_source_info(title, text, file_mapping, gemini_id_mapping)
 
         # 來源圖示
         source_icon = {
