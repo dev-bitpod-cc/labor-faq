@@ -220,15 +220,16 @@ def query_faq(client, query: str, store_id: str) -> dict:
         }
 
 
-def parse_source_info(title: str) -> dict:
+def parse_source_info(title: str, text: str = "") -> dict:
     """
-    解析來源檔名資訊
+    解析來源資訊
 
     Args:
-        title: 檔案名稱 (如 bli_faq_20220101_0001.txt)
+        title: 檔案名稱 (可能是 Gemini file ID 或檔名)
+        text: 內容片段（可從中提取來源和問題）
 
     Returns:
-        dict: 包含 source, date, display_name
+        dict: 包含 source, question, display_name
     """
     source_map = {
         "mol": "勞動部",
@@ -236,34 +237,53 @@ def parse_source_info(title: str) -> dict:
         "bli": "勞動部勞工保險局"
     }
 
-    # 解析檔名模式: {source}_faq_{date}_{seq}.txt
-    pattern = r'(\w+)_faq_(\d{8})_(\d+)'
-    match = re.match(pattern, title.replace('.txt', ''))
+    source_name = ""
+    question = ""
+    category = ""
 
-    if match:
-        source_code = match.group(1).lower()
-        date_str = match.group(2)
-        seq = match.group(3)
+    # 優先從內容中提取來源和問題
+    if text:
+        # 提取來源
+        source_match = re.search(r'來源:\s*(.+?)(?:\n|$)', text)
+        if source_match:
+            source_name = source_match.group(1).strip()
 
-        source_name = source_map.get(source_code, source_code.upper())
+        # 提取分類
+        category_match = re.search(r'分類:\s*(.+?)(?:\n|$)', text)
+        if category_match:
+            category = category_match.group(1).strip()
 
-        # 格式化日期
-        try:
-            date_obj = datetime.strptime(date_str, '%Y%m%d')
-            formatted_date = date_obj.strftime('%Y-%m-%d')
-        except:
-            formatted_date = date_str
+        # 提取問題
+        question_match = re.search(r'問:\s*(.+?)(?:\n|答:|$)', text, re.DOTALL)
+        if question_match:
+            question = question_match.group(1).strip()
+            # 截斷過長的問題
+            if len(question) > 50:
+                question = question[:50] + "..."
 
-        return {
-            "source": source_name,
-            "date": formatted_date,
-            "display_name": f"{source_name} ({formatted_date})"
-        }
+    # 如果從內容提取失敗，嘗試從檔名解析
+    if not source_name:
+        pattern = r'(\w+)_faq_(\d{8})_(\d+)'
+        match = re.match(pattern, title.replace('.txt', ''))
+        if match:
+            source_code = match.group(1).lower()
+            source_name = source_map.get(source_code, source_code.upper())
+
+    # 建立顯示名稱
+    if question:
+        display_name = question
+    elif category:
+        display_name = f"{source_name} - {category}" if source_name else category
+    elif source_name:
+        display_name = source_name
+    else:
+        display_name = "FAQ 資料"
 
     return {
-        "source": "未知來源",
-        "date": "",
-        "display_name": title
+        "source": source_name or "未知來源",
+        "question": question,
+        "category": category,
+        "display_name": display_name
     }
 
 
@@ -272,11 +292,12 @@ def display_sources(sources: list):
     if not sources:
         return
 
-    # 去重
+    # 去重（使用內容片段去重）
     seen = set()
     unique_sources = []
     for s in sources:
-        key = s.get('title', '')
+        text = s.get('text', '')
+        key = text[:100] if text else s.get('title', '')
         if key and key not in seen:
             seen.add(key)
             unique_sources.append(s)
@@ -285,21 +306,36 @@ def display_sources(sources: list):
         return
 
     st.markdown("---")
-    st.markdown(f"**參考來源** ({len(unique_sources)} 筆)")
+    st.markdown(f"**📚 參考來源** ({len(unique_sources)} 筆)")
 
     for i, source in enumerate(unique_sources[:10], 1):
         title = source.get('title', '未知')
-        info = parse_source_info(title)
+        text = source.get('text', '')
+        info = parse_source_info(title, text)
 
-        with st.expander(f"{i}. {info['display_name']}", expanded=False):
-            if info['date']:
-                st.caption(f"發布日期: {info['date']}")
+        # 來源圖示
+        source_icon = {
+            "勞動部": "🏛️",
+            "職業安全衛生署": "⚠️",
+            "勞動部勞工保險局": "🛡️"
+        }.get(info['source'], "📄")
 
-            # 顯示摘要
-            text = source.get('text', '')
+        with st.expander(f"{i}. {source_icon} {info['display_name']}", expanded=False):
+            # 顯示來源機關
+            if info['source'] and info['source'] != "未知來源":
+                st.caption(f"來源：{info['source']}")
+
+            # 顯示分類
+            if info.get('category'):
+                st.caption(f"分類：{info['category']}")
+
+            # 顯示內容摘要
             if text:
-                st.markdown("**摘要:**")
-                st.markdown(f"> {text}...")
+                # 清理內容，移除 metadata 部分
+                clean_text = re.sub(r'^(來源|分類|路徑|問|答):.+?\n', '', text, flags=re.MULTILINE)
+                clean_text = clean_text.strip()
+                if clean_text:
+                    st.markdown(f"> {clean_text[:300]}{'...' if len(clean_text) > 300 else ''}")
 
 
 # ============================================================
@@ -407,15 +443,6 @@ def main():
 
         # 顯示來源
         display_sources(sources)
-
-        # 除錯資訊（摺疊）
-        with st.expander("除錯資訊", expanded=False):
-            st.json({
-                "query": query,
-                "sources_count": len(sources),
-                "store_id": store_id,
-                "metadata": result.get("metadata", {})
-            })
 
     # 頁尾
     st.markdown("---")
