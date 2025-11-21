@@ -14,8 +14,10 @@ Version: 1.0.0 (2025-11-21)
 
 import os
 import re
+import json
 import streamlit as st
 from datetime import datetime
+from pathlib import Path
 
 # 載入環境變數
 from dotenv import load_dotenv
@@ -153,6 +155,17 @@ def init_gemini():
         return None, f"初始化失敗: {e}"
 
 
+@st.cache_data
+def load_file_mapping():
+    """載入 FAQ 檔案映射（包含原始連結）"""
+    mapping_path = Path(__file__).parent / "data" / "faq_file_mapping.json"
+    if mapping_path.exists():
+        with open(mapping_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            return data.get('files', {})
+    return {}
+
+
 def query_faq(client, query: str, store_id: str) -> dict:
     """
     執行 FAQ 查詢
@@ -220,16 +233,17 @@ def query_faq(client, query: str, store_id: str) -> dict:
         }
 
 
-def parse_source_info(title: str, text: str = "") -> dict:
+def parse_source_info(title: str, text: str = "", file_mapping: dict = None) -> dict:
     """
     解析來源資訊
 
     Args:
         title: 檔案名稱 (可能是 Gemini file ID 或檔名)
         text: 內容片段（可從中提取來源和問題）
+        file_mapping: 檔案映射（包含原始連結）
 
     Returns:
-        dict: 包含 source, question, display_name
+        dict: 包含 source, question, display_name, detail_url
     """
     source_map = {
         "mol": "勞動部",
@@ -240,6 +254,23 @@ def parse_source_info(title: str, text: str = "") -> dict:
     source_name = ""
     question = ""
     category = ""
+    detail_url = ""
+    doc_id = ""
+
+    # 嘗試從檔名提取 document ID
+    pattern = r'(\w+_faq_\d{8}_\d+)'
+    match = re.search(pattern, title.replace('.txt', ''))
+    if match:
+        doc_id = match.group(1)
+
+    # 從 file_mapping 查詢原始連結
+    if file_mapping and doc_id and doc_id in file_mapping:
+        mapping_info = file_mapping[doc_id]
+        detail_url = mapping_info.get('detail_url', '')
+        if not question:
+            question = mapping_info.get('question', '')
+        if not source_name:
+            source_name = mapping_info.get('source', '')
 
     # 優先從內容中提取來源和問題
     if text:
@@ -261,13 +292,10 @@ def parse_source_info(title: str, text: str = "") -> dict:
             if len(question) > 50:
                 question = question[:50] + "..."
 
-    # 如果從內容提取失敗，嘗試從檔名解析
-    if not source_name:
-        pattern = r'(\w+)_faq_(\d{8})_(\d+)'
-        match = re.match(pattern, title.replace('.txt', ''))
-        if match:
-            source_code = match.group(1).lower()
-            source_name = source_map.get(source_code, source_code.upper())
+    # 如果從內容提取失敗，嘗試從檔名解析來源
+    if not source_name and doc_id:
+        source_code = doc_id.split('_')[0].lower()
+        source_name = source_map.get(source_code, source_code.upper())
 
     # 建立顯示名稱
     if question:
@@ -283,7 +311,8 @@ def parse_source_info(title: str, text: str = "") -> dict:
         "source": source_name or "未知來源",
         "question": question,
         "category": category,
-        "display_name": display_name
+        "display_name": display_name,
+        "detail_url": detail_url
     }
 
 
@@ -291,6 +320,9 @@ def display_sources(sources: list):
     """顯示參考來源"""
     if not sources:
         return
+
+    # 載入檔案映射
+    file_mapping = load_file_mapping()
 
     # 去重（使用內容片段去重）
     seen = set()
@@ -311,7 +343,7 @@ def display_sources(sources: list):
     for i, source in enumerate(unique_sources[:10], 1):
         title = source.get('title', '未知')
         text = source.get('text', '')
-        info = parse_source_info(title, text)
+        info = parse_source_info(title, text, file_mapping)
 
         # 來源圖示
         source_icon = {
@@ -328,6 +360,10 @@ def display_sources(sources: list):
             # 顯示分類
             if info.get('category'):
                 st.caption(f"分類：{info['category']}")
+
+            # 顯示原始連結
+            if info.get('detail_url'):
+                st.markdown(f"🔗 [查看原始頁面]({info['detail_url']})")
 
             # 顯示內容摘要
             if text:
